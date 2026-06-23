@@ -107,6 +107,22 @@ foreach (glob(JSON_DIR . '/*.json') as $file) {
         fail("Invalid structure in {$year}.json");
     }
 
+    foreach ($data as $date => $price) {
+    
+        $dt = DateTime::createFromFormat('Y-m-d', $date);
+    
+        if (
+            !$dt ||
+            $dt->format('Y-m-d') !== $date
+        ) {
+            fail("Invalid date key in {$year}.json : {$date}");
+        }
+    
+        if (!is_numeric($price) || $price <= 0) {
+            fail("Invalid price in {$year}.json : {$date}");
+        }
+    }
+    
     ksort($data);
 
     $years[$year] = $data;
@@ -177,12 +193,18 @@ if (
 
 $apiRows = count($response['prices']);
 
-$validRows = 0;
+if ($apiRows === 0) {
+    fail('CoinGecko returned zero price records');
+}
+
 $updatedFiles = [];
 $newFiles = [];
 
 $minUpdatedDate = null;
 $maxUpdatedDate = null;
+
+$dailyPrices = [];
+$uniqueDates = [];
 
 foreach ($response['prices'] as $row) {
 
@@ -230,6 +252,23 @@ foreach ($response['prices'] as $row) {
         continue;
     }
 
+   $uniqueDates[$date] = true;
+
+   if (
+       !isset($dailyPrices[$date]) ||
+       $timestamp > $dailyPrices[$date]['timestamp']
+   ) {
+       $dailyPrices[$date] = [
+           'timestamp' => $timestamp,
+           'price'     => $price
+       ];
+   }
+}
+
+ksort($dailyPrices);
+
+foreach ($dailyPrices as $date => $item) {
+
     $year = substr($date, 0, 4);
 
     if (!isset($years[$year])) {
@@ -241,11 +280,9 @@ foreach ($response['prices'] as $row) {
         logLine("New year file will be created: {$year}.json");
     }
 
-    $years[$year][$date] = $price;
+    $years[$year][$date] = $item['price'];
 
     $updatedFiles[$year] = true;
-
-    $validRows++;
 
     if (
         $minUpdatedDate === null ||
@@ -290,16 +327,24 @@ foreach ($years as $year => $data) {
         fail("Failed writing {$year}.json");
     }
 
-    $verify = json_decode(
-        file_get_contents($file),
-        true
-    );
+   $verifyRaw = file_get_contents($file);
 
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        fail(
-            "Saved file validation failed: {$year}.json"
-        );
-    }
+   if ($verifyRaw === false) {
+       fail("Failed reading back {$year}.json");
+   }
+
+   $verify = json_decode($verifyRaw, true);
+
+   if (json_last_error() !== JSON_ERROR_NONE) {
+       fail(
+           "Saved file validation failed: {$year}.json | " .
+           json_last_error_msg()
+       );
+   }
+
+   if (!is_array($verify)) {
+       fail("Saved file structure invalid: {$year}.json");
+   }
 
     logLine(
         "Saved {$year}.json (" .
@@ -314,7 +359,8 @@ logLine('BTC PRICE UPDATE SUMMARY');
 logLine('========================================');
 logLine("HTTP Status       : {$httpCode}");
 logLine("API Rows Received : {$apiRows}");
-logLine("Valid Rows Used   : {$validRows}");
+logLine("Unique Days Found : " . count($uniqueDates));
+logLine("Days Written      : " . count($dailyPrices));
 
 if ($minUpdatedDate !== null) {
     logLine(
