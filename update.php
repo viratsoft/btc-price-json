@@ -7,11 +7,69 @@ define('JSON_DIR', __DIR__ . '/json');
 define('VS_CURRENCY', 'usd');
 define('REFRESH_DAYS', 3);
 
+// Optional CoinGecko Demo API Key
+define('COINGECKO_API_KEY', getenv('COINGECKO_API_KEY') ?: '');
+
+function fail(string $message): void
+{
+    fwrite(STDERR, $message . PHP_EOL);
+    exit(1);
+}
+
+function httpGet(string $url, int $retries = 3): string
+{
+    for ($attempt = 1; $attempt <= $retries; $attempt++) {
+
+        $headers = [
+            'Accept: application/json',
+            'User-Agent: btc-price-json/1.0'
+        ];
+
+        if (COINGECKO_API_KEY !== '') {
+            $headers[] = 'x-cg-demo-api-key: ' . COINGECKO_API_KEY;
+        }
+
+        $ch = curl_init();
+
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT        => 60,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_ENCODING       => '',
+        ]);
+
+        $response = curl_exec($ch);
+
+        $curlError = curl_error($ch);
+        $httpCode  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+        curl_close($ch);
+
+        echo "Attempt {$attempt}/{$retries} - HTTP {$httpCode}\n";
+
+        if ($response !== false && $httpCode === 200) {
+            return $response;
+        }
+
+        if ($curlError) {
+            echo "cURL Error: {$curlError}\n";
+        }
+
+        if ($attempt < $retries) {
+            sleep(5);
+        }
+    }
+
+    fail("Failed to fetch API data");
+}
+
 if (!is_dir(JSON_DIR)) {
     mkdir(JSON_DIR, 0755, true);
 }
 
-$latestYear = null;
 $latestDate = null;
 
 foreach (glob(JSON_DIR . '/*.json') as $file) {
@@ -26,16 +84,16 @@ foreach (glob(JSON_DIR . '/*.json') as $file) {
 
     if ($latestDate === null || strtotime($date) > strtotime($latestDate)) {
         $latestDate = $date;
-        $latestYear = basename($file, '.json');
     }
 }
 
 if ($latestDate === null) {
-    die("No JSON data found.\n");
+    fail("No JSON data found");
 }
 
 /*
  * Refresh last 3 dates
+ *
  * Example:
  * Last stored = 2026-06-15
  * Fetch from  = 2026-06-13
@@ -50,24 +108,24 @@ $url = sprintf(
     $to
 );
 
-echo "Fetching:\n$url\n\n";
+echo "Fetching:\n{$url}\n\n";
 
-$json = file_get_contents($url);
-
-if ($json === false) {
-    die("Failed to download API data\n");
-}
+$json = httpGet($url);
 
 $response = json_decode($json, true);
 
-if (!isset($response['prices'])) {
-    die("Invalid API response\n");
+if (
+    !is_array($response) ||
+    !isset($response['prices']) ||
+    !is_array($response['prices'])
+) {
+    fail("Invalid API response");
 }
 
 $years = [];
 
 /*
- * Load existing files
+ * Load existing JSON files
  */
 foreach (glob(JSON_DIR . '/*.json') as $file) {
 
@@ -80,13 +138,19 @@ foreach (glob(JSON_DIR . '/*.json') as $file) {
         : [];
 }
 
+$updatedCount = 0;
+
 /*
  * Update prices
  */
 foreach ($response['prices'] as $row) {
 
-    $timestamp = (int)($row[0] / 1000);
-    $price     = round((float)$row[1], 2);
+    if (!isset($row[0], $row[1])) {
+        continue;
+    }
+
+    $timestamp = (int) floor($row[0] / 1000);
+    $price     = round((float) $row[1], 2);
 
     $date = gmdate('Y-m-d', $timestamp);
     $year = substr($date, 0, 4);
@@ -95,11 +159,8 @@ foreach ($response['prices'] as $row) {
         $years[$year] = [];
     }
 
-    /*
-     * Overwrite existing entry if exists.
-     * This keeps latest closing values.
-     */
     $years[$year][$date] = $price;
+    $updatedCount++;
 }
 
 /*
@@ -126,4 +187,5 @@ foreach ($years as $year => $data) {
     echo "Updated {$year}.json (" . count($data) . " entries)\n";
 }
 
-echo "\nDone\n";
+echo "\nRows processed: {$updatedCount}\n";
+echo "Done\n";
