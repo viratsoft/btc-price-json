@@ -109,7 +109,7 @@ foreach (glob(JSON_DIR . '/*.json') as $file) {
 
     foreach ($data as $date => $price) {
     
-        $dt = DateTime::createFromFormat('Y-m-d', $date);
+        $dt = DateTime::createFromFormat('Y-m-d', $date, new DateTimeZone('UTC'));
     
         if (
             !$dt ||
@@ -144,12 +144,11 @@ if ($latestDate === null) {
     fail("No valid JSON files found");
 }
 
-$fetchStartDate = date(
-    'Y-m-d',
-    strtotime(
-        $latestDate . ' -' . (REFRESH_DAYS - 1) . ' days'
-    )
-);
+$utc = new DateTimeZone('UTC');
+
+$fetchStartDate = (new DateTimeImmutable($latestDate, $utc))
+    ->modify('-' . (REFRESH_DAYS - 1) . ' days')
+    ->format('Y-m-d');
 
 $from = strtotime($fetchStartDate);
 $to   = time();
